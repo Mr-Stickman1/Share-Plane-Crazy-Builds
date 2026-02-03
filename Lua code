@@ -1,0 +1,144 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+
+local function snap(n) return math.floor(n*4+0.5)/4 end
+
+local function exportBuild()
+    local plotFolder = Workspace:FindFirstChild(LocalPlayer.Name)
+    if not plotFolder then warn("No build found"); return end
+    local blocks, palette, idToName, nextId = {}, {}, {}, 1
+    local minX,minY,minZ,maxX,maxY,maxZ = math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge
+    local function getBlockId(name)
+        if not palette[name] then palette[name]=nextId; idToName[nextId]=name; nextId=nextId+1 end
+        return palette[name]
+    end
+    local function processPart(part)
+        if not part:IsA("BasePart") then return end
+        if part.Name:match("Config") then return end
+        local x,y,z = snap(part.Position.X),snap(part.Position.Y),snap(part.Position.Z)
+        minX,minY,minZ = math.min(minX,x),math.min(minY,y),math.min(minZ,z)
+        maxX,maxY,maxZ = math.max(maxX,x),math.max(maxY,y),math.max(maxZ,z)
+        local id = getBlockId(part.Name)
+        local motors = {}
+        for _,c in ipairs(part:GetChildren()) do
+            if c:IsA("Motor6D") or c:IsA("HingeConstraint") then
+                table.insert(motors,{ClassName=c.ClassName,Name=c.Name,C0=c.C0 and {c.C0:components()} or nil,C1=c.C1 and {c.C1:components()} or nil,Enabled=c.Enabled~=nil and c.Enabled or true,ActuatorType=c.ActuatorType,Keybind=c:FindFirstChild("Keybind") and c.Keybind.Value or nil,Locked=c:FindFirstChild("Locked") and c.Locked.Value or nil})
+            end
+        end
+        local keybinds = {}
+        for _,v in ipairs(part:GetChildren()) do
+            if v:IsA("IntValue") or v:IsA("BoolValue") then keybinds[v.Name]=v.Value end
+        end
+        local specialType="Generic"
+        local lname=part.Name:lower()
+        if lname:match("engine") then specialType="Engine"
+        elseif lname:match("wheel") then specialType="Wheel"
+        elseif lname:match("thruster") then specialType="Thruster"
+        elseif lname:match("balloon") then specialType="Balloon"
+        elseif part:FindFirstChildOfClass("HingeConstraint") then specialType="Hinge"
+        elseif part:FindFirstChildOfClass("Seat") then specialType="Seat"
+        end
+        table.insert(blocks,{x=x,y=y,z=z,size={part.Size.X,part.Size.Y,part.Size.Z},rotation={part.Orientation.X,part.Orientation.Y,part.Orientation.Z},color={part.Color.R,part.Color.G,part.Color.B},anchored=part.Anchored,id=id,special=specialType,motors=motors,keybinds=keybinds})
+    end
+    for _,obj in ipairs(plotFolder:GetDescendants()) do processPart(obj) end
+    for _,b in ipairs(blocks) do b.x=b.x-minX; b.y=b.y-minY; b.z=b.z-minZ end
+    local pcbuild={version=1,width=maxX-minX+1,height=maxY-minY+1,length=maxZ-minZ+1,palette=idToName,blocks=blocks,metadata={name="Exported Build "..os.date("%Y-%m-%d"),author=LocalPlayer.Name}}
+    local json=HttpService:JSONEncode(pcbuild)
+    if setclipboard then setclipboard(json) end
+    print(" Build copied to clipboard!")
+end
+
+local function importBuild(json)
+    local success,pcbuild=pcall(HttpService.JSONDecode,HttpService,json)
+    if not success then warn("Failed to decode JSON",pcbuild); return end
+    local buildFolder=Instance.new("Folder")
+    buildFolder.Name=pcbuild.metadata.name or "ImportedBuild"
+    buildFolder.Parent=Workspace
+    local idToName=pcbuild.palette or {}
+    for _,b in ipairs(pcbuild.blocks) do
+        local part=Instance.new("Part")
+        part.Name=idToName[b.id] or "Unknown"
+        part.Size=Vector3.new(b.size[1],b.size[2],b.size[3])
+        part.Position=Vector3.new(b.x+0.5,b.y+0.5,b.z+0.5)
+        part.Color=Color3.new(b.color[1],b.color[2],b.color[3])
+        part.Anchored=b.anchored
+        part.Orientation=Vector3.new(b.rotation[1],b.rotation[2],b.rotation[3])
+        part.Parent=buildFolder
+        for k,v in pairs(b.keybinds or {}) do
+            if type(v)=="boolean" then
+                local bool=Instance.new("BoolValue")
+                bool.Name=k
+                bool.Value=v
+                bool.Parent=part
+            else
+                local iv=Instance.new("IntValue")
+                iv.Name=k
+                iv.Value=v
+                iv.Parent=part
+            end
+        end
+        for _,m in ipairs(b.motors or {}) do
+            local newMotor
+            if m.ClassName=="Motor6D" then newMotor=Instance.new("Motor6D")
+            elseif m.ClassName=="HingeConstraint" then newMotor=Instance.new("HingeConstraint") end
+            if newMotor then
+                newMotor.Name=m.Name
+                if m.C0 then newMotor.C0=CFrame.new(unpack(m.C0)) end
+                if m.C1 then newMotor.C1=CFrame.new(unpack(m.C1)) end
+                if m.Enabled~=nil then newMotor.Enabled=m.Enabled end
+                newMotor.Parent=part
+                if m.Keybind then local kb=Instance.new("IntValue"); kb.Name="Keybind"; kb.Value=m.Keybind; kb.Parent=newMotor end
+                if m.Locked~=nil then local lock=Instance.new("BoolValue"); lock.Name="Locked"; lock.Value=m.Locked; lock.Parent=newMotor end
+            end
+        end
+    end
+    print(" Build imported into workspace:",buildFolder.Name)
+end
+
+local screenGui=Instance.new("ScreenGui")
+screenGui.Name="PlaneCrazyUltimateGUI"
+screenGui.ResetOnSpawn=false
+screenGui.Parent=CoreGui
+
+local frame=Instance.new("Frame")
+frame.Size=UDim2.new(0,550,0,350)
+frame.Position=UDim2.new(0.5,-275,0.5,-175)
+frame.BackgroundColor3=Color3.fromRGB(25,25,25)
+frame.BorderSizePixel=0
+frame.Parent=screenGui
+
+local exportBtn=Instance.new("TextButton")
+exportBtn.Size=UDim2.new(0,200,0,50)
+exportBtn.Position=UDim2.new(0,20,0,20)
+exportBtn.Text="Export Build"
+exportBtn.TextColor3=Color3.new(1,1,1)
+exportBtn.BackgroundColor3=Color3.fromRGB(50,50,50)
+exportBtn.Parent=frame
+exportBtn.MouseButton1Click:Connect(exportBuild)
+
+local importBtn=Instance.new("TextButton")
+importBtn.Size=UDim2.new(0,200,0,50)
+importBtn.Position=UDim2.new(0,20,0,80)
+importBtn.Text="Import Build"
+importBtn.TextColor3=Color3.new(1,1,1)
+importBtn.BackgroundColor3=Color3.fromRGB(50,50,50)
+importBtn.Parent=frame
+
+local textBox=Instance.new("TextBox")
+textBox.Size=UDim2.new(0,500,0,200)
+textBox.Position=UDim2.new(0,20,0,140)
+textBox.ClearTextOnFocus=false
+textBox.Text="Paste JSON here..."
+textBox.TextWrapped=true
+textBox.TextXAlignment=Enum.TextXAlignment.Left
+textBox.TextYAlignment=Enum.TextYAlignment.Top
+textBox.BackgroundColor3=Color3.fromRGB(40,40,40)
+textBox.TextColor3=Color3.new(1,1,1)
+textBox.Parent=frame
+
+importBtn.MouseButton1Click:Connect(function() importBuild(textBox.Text) end)
+
+print Plane Crazy Ultimate Export/Import GUI loaded!")
